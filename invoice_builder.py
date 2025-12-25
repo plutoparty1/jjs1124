@@ -42,8 +42,9 @@ class VendorConfig:
     
     # ID 시트 설정 (매장명 ↔ 로그인ID 매핑 테이블)
     id_sheet: Optional[str] = None        # 거래명세서에서 ID 시트명 (예: "ID")
-    id_store_col: str = "B"               # ID 시트에서 매장명 열
+    id_store_col: str = "B"               # ID 시트에서 명세서 매장명 열
     id_login_col: str = "C"               # ID 시트에서 로그인ID 열
+    id_list_store_col: str = "D"          # ID 시트에서 전체리스트 매장명 열 (주스샵 매장명)
     id_start_row: int = 2                 # ID 시트에서 데이터 시작 행
     
     # 보호 테이블 헤더 (이 텍스트를 찾아서 그 행 위에 삽입)
@@ -408,11 +409,14 @@ def get_existing_login_ids_dynamic(
     return existing_ids, existing_store_names
 
 
-def add_to_id_sheet(wb, vendor: VendorConfig, new_stores: List[str], new_ids: List[str]):
+def add_to_id_sheet(wb, vendor: VendorConfig, new_ids: List[str], list_store_names: List[str]):
     """
-    ID 시트에 새 매장명과 로그인ID 추가
+    ID 시트에 새 매장 추가
+    - 명세서 매장명(id_store_col): 비워둠
+    - 로그인ID(id_login_col): 입력
+    - 전체리스트 매장명(id_list_store_col): 입력 (주스샵 매장명)
     """
-    if not vendor.id_sheet or not new_stores:
+    if not vendor.id_sheet or not new_ids:
         return
     
     # ID 시트 찾기 (숨겨져 있어도 찾음)
@@ -421,22 +425,27 @@ def add_to_id_sheet(wb, vendor: VendorConfig, new_stores: List[str], new_ids: Li
     if id_ws is None:
         return
     
-    store_col = col_letter_to_num(vendor.id_store_col)
-    login_col = col_letter_to_num(vendor.id_login_col)
+    store_col = col_letter_to_num(vendor.id_store_col)        # 명세서 매장명 (비워둠)
+    login_col = col_letter_to_num(vendor.id_login_col)        # 로그인ID
+    list_store_col = col_letter_to_num(vendor.id_list_store_col)  # 전체리스트 매장명
     
-    # 마지막 데이터 행 찾기
+    # 마지막 데이터 행 찾기 (로그인ID 열 기준으로 찾기)
     start = vendor.id_start_row
     r = start
     while True:
-        val = id_ws.Cells(r, store_col).Value
+        val = id_ws.Cells(r, login_col).Value
         if norm_text(val) == "":
             break
         r += 1
     
-    # 새 매장명과 로그인ID 추가
-    for i, (store, login_id) in enumerate(zip(new_stores, new_ids)):
-        id_ws.Cells(r + i, store_col).Value = store
+    # 새 매장 추가
+    for i, (login_id, list_store) in enumerate(zip(new_ids, list_store_names)):
+        # 명세서 매장명은 비워둠 (id_store_col)
+        id_ws.Cells(r + i, store_col).Value = ""
+        # 로그인ID 입력
         id_ws.Cells(r + i, login_col).Value = login_id
+        # 전체리스트 매장명 입력 (주스샵 매장명)
+        id_ws.Cells(r + i, list_store_col).Value = list_store
 
 
 def hide_id_sheet(wb, vendor: VendorConfig):
@@ -825,6 +834,7 @@ def run_build(
         total_existing_count = 0
         all_missing_stores = []
         all_missing_ids = []
+        all_missing_list_stores = []  # 전체리스트 매장명 (주스샵 매장명)
         all_excluded_stores = []  # 제외된 매장 (전체리스트에 없음)
         
         # 각 시트 처리
@@ -878,18 +888,21 @@ def run_build(
             # 새로 추가할 매장 찾기 (로그인ID로 비교)
             missing_ids = []
             missing_stores = []
+            missing_list_stores = []  # 전체리스트 매장명 (주스샵 매장명)
             for login_id, store_name_from_list in id_to_store.items():
                 if login_id not in existing_ids:
                     store_name = id_to_store_invoice.get(login_id, store_name_from_list)
                     missing_ids.append(login_id)
                     missing_stores.append(store_name)
+                    missing_list_stores.append(store_name_from_list)  # 전체리스트 매장명
             
             # 매장명 기준으로 정렬
             if missing_stores:
-                sorted_pairs = sorted(zip(missing_stores, missing_ids), key=lambda x: x[0])
-                missing_stores, missing_ids = zip(*sorted_pairs)
+                sorted_pairs = sorted(zip(missing_stores, missing_ids, missing_list_stores), key=lambda x: x[0])
+                missing_stores, missing_ids, missing_list_stores = zip(*sorted_pairs)
                 missing_stores = list(missing_stores)
                 missing_ids = list(missing_ids)
+                missing_list_stores = list(missing_list_stores)
 
             if progress_callback:
                 progress_callback(sheet_progress_base + 10, 100, f"[{sheet_name}] 추가할 매장: {len(missing_stores)}개")
@@ -913,6 +926,7 @@ def run_build(
                 if sheet_idx == 0:
                     all_missing_stores = missing_stores
                     all_missing_ids = missing_ids
+                    all_missing_list_stores = missing_list_stores
             
             # 제외된 매장 목록을 공급가액 셀 아래에 기록
             if excluded_stores:
@@ -930,12 +944,15 @@ def run_build(
                             f"[{sheet_name}] 제외 매장 {len(excluded_stores)}개 기록"
                         )
 
-        # ID 시트에 새 매장명과 로그인ID 추가 (한번만)
-        if all_missing_stores:
+        # ID 시트에 새 매장 추가 (한번만)
+        # - 명세서 매장명: 비워둠
+        # - 로그인ID: 입력
+        # - 전체리스트 매장명 (주스샵 매장명): 입력
+        if all_missing_ids:
             if progress_callback:
                 progress_callback(85, 100, "ID 시트에 새 매핑 추가 중...")
             
-            add_to_id_sheet(wb, vendor, all_missing_stores, all_missing_ids)
+            add_to_id_sheet(wb, vendor, all_missing_ids, all_missing_list_stores)
         
         missing_stores = all_missing_stores  # 결과 반환용
 
