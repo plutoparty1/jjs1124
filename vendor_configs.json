@@ -1,0 +1,122 @@
+{
+  "할리스커피": {
+    "name": "할리스커피",
+    "list_sheet": null,
+    "header_row": 3,
+    "list_id_col": "D",
+    "invoice_sheet": "상세내역",
+    "invoice_sheets": null,
+    "store_col_letter": "B",
+    "table_header_text": "매장명",
+    "id_sheet": "ID",
+    "id_store_col": "B",
+    "id_login_col": "C",
+    "id_start_row": 2,
+    "protected_table_headers": [
+      "공급가액",
+      "부가세"
+    ],
+    "company_value": "할리스커피",
+    "group_col": "B",
+    "group_value": null,
+    "group_exclude": null,
+    "date_cell": "B12"
+  },
+  "카페드롭탑": {
+    "name": "카페드롭탑",
+    "list_sheet": null,
+    "header_row": 3,
+    "list_id_col": "D",
+    "invoice_sheet": "상세내역",
+    "invoice_sheets": null,
+    "store_col_letter": "E",
+    "table_header_text": "매장명",
+    "id_sheet": "ID",
+    "id_store_col": "B",
+    "id_login_col": "C",
+    "id_start_row": 2,
+    "protected_table_headers": [
+      "공급가액",
+      "부가세"
+    ],
+    "company_value": "카페드롭탑",
+    "group_col": "B",
+    "group_value": null,
+    "group_exclude": null,
+    "date_cell": "B12"
+  },
+  "아웃백스테이크하우스": {
+    "name": "아웃백스테이크하우스",
+    "list_sheet": null,
+    "header_row": 3,
+    "list_id_col": "D",
+    "invoice_sheet": "상세내역",
+    "invoice_sheets": null,
+    "store_col_letter": "C",
+    "table_header_text": "매장명",
+    "id_sheet": "ID",
+    "id_store_col": "B",
+    "id_login_col": "C",
+    "id_start_row": 2,
+    "protected_table_headers": [
+      "공급가액",
+      "부가세"
+    ],
+    "company_value": "아웃백스테이크하우스",
+    "group_col": "B",
+    "group_value": null,
+    "group_exclude": null,
+    "date_cell": "B13"
+  },
+  "타코벨": {
+    "name": "타코벨",
+    "list_sheet": null,
+    "header_row": 3,
+    "list_id_col": "D",
+    "invoice_sheet": "상세내역",
+    "invoice_sheets": [
+      "상세내역-BGM",
+      "상세내역-DMB"
+    ],
+    "store_col_letter": "C",
+    "table_header_text": "매장명",
+    "id_sheet": "ID",
+    "id_store_col": "B",
+    "id_login_col": "C",
+    "id_start_row": 2,
+    "protected_table_headers": [
+      "공급가액",
+      "부가세"
+    ],
+    "company_value": "KFC",
+    "group_col": "B",
+    "group_value": "타코벨",
+    "group_exclude": null,
+    "date_cell": "B13"
+  },
+  "KFC": {
+    "name": "KFC",
+    "list_sheet": null,
+    "header_row": 3,
+    "list_id_col": "D",
+    "invoice_sheet": "상세내역",
+    "invoice_sheets": null,
+    "store_col_letter": "C",
+    "table_header_text": "매장명",
+    "id_sheet": "ID",
+    "id_store_col": "B",
+    "id_login_col": "C",
+    "id_start_row": 2,
+    "protected_table_headers": [
+      "공급가액",
+      "부가세"
+    ],
+    "company_value": "KFC",
+    "group_col": "B",
+    "group_value": null,
+    "group_exclude": [
+      "타코벨"
+    ],
+    "date_cell": "B13"
+  }
+}
