@@ -1,10 +1,14 @@
 import re
 import os
+import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Set, Optional, Tuple, Callable
 
 import pandas as pd
+
+# 설정 파일 경로
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor_configs.json")
 
 
 # ----------------------------
@@ -48,7 +52,11 @@ class VendorConfig:
     # 업체별 필터(전체리스트에서 기업명 매칭)
     company_value: Optional[str] = None   # 예: "할리스커피" / 업체마다 다름
     group_col: Optional[str] = None       # 그룹명 열 (예: "B")
-    group_value: Optional[str] = None     # 그룹명 값 (예: "타코벨")
+    group_value: Optional[str] = None     # 그룹명 값 (예: "타코벨") - 포함 조건
+    group_exclude: Optional[List[str]] = None  # 제외할 그룹명 목록 (예: ["타코벨"])
+    
+    # 날짜 셀 (첫번째 시트에 오늘 날짜 입력)
+    date_cell: Optional[str] = None       # 날짜 셀 (예: "A1", "B2") - 형식: YYYY-MM-DD
 
 
 VENDOR_CONFIGS: Dict[str, VendorConfig] = {
@@ -114,8 +122,73 @@ VENDOR_CONFIGS: Dict[str, VendorConfig] = {
         group_col="B",              # 그룹명 열 = B
         group_value="타코벨",        # 그룹명(B열) = 타코벨
     ),
+    "KFC": VendorConfig(
+        name="KFC",
+        list_sheet=None,
+        header_row=3,
+        list_id_col="D",            # 전체리스트 D열 = 로그인ID
+        invoice_sheet="상세내역",
+        store_col_letter="C",       # C열 = 매장명
+        table_header_text="매장명",  # 테이블 헤더 텍스트 (동적 감지)
+        id_sheet="ID",              # ID 시트 (매핑 테이블)
+        id_store_col="B",           # ID 시트 B열 = 매장명
+        id_login_col="C",           # ID 시트 C열 = 로그인ID
+        id_start_row=2,             # ID 시트 2행부터 데이터
+        protected_table_headers=["공급가액", "부가세"],
+        company_value="KFC",        # 기업명(A열) = KFC
+        group_col="B",              # 그룹명 열 = B
+        group_exclude=["타코벨"],    # 그룹명 타코벨 제외
+    ),
     # 여기에 업체 계속 추가하면 됨
 }
+
+
+def save_vendor_configs():
+    """업체 설정을 JSON 파일로 저장"""
+    data = {}
+    for name, config in VENDOR_CONFIGS.items():
+        config_dict = asdict(config)
+        data[name] = config_dict
+    
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_vendor_configs():
+    """JSON 파일에서 업체 설정 불러오기"""
+    global VENDOR_CONFIGS
+    
+    if not os.path.exists(CONFIG_FILE):
+        # 파일이 없으면 기본 설정 저장
+        save_vendor_configs()
+        return
+    
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        VENDOR_CONFIGS.clear()
+        for name, config_dict in data.items():
+            VENDOR_CONFIGS[name] = VendorConfig(**config_dict)
+    except Exception as e:
+        print(f"설정 파일 로드 실패: {e}")
+
+
+def add_vendor_config(config: VendorConfig):
+    """업체 설정 추가"""
+    VENDOR_CONFIGS[config.name] = config
+    save_vendor_configs()
+
+
+def delete_vendor_config(name: str):
+    """업체 설정 삭제"""
+    if name in VENDOR_CONFIGS:
+        del VENDOR_CONFIGS[name]
+        save_vendor_configs()
+
+
+# 프로그램 시작 시 설정 로드
+load_vendor_configs()
 
 
 # ----------------------------
@@ -178,7 +251,7 @@ def extract_stores_from_list(
     company_idx = find_col_idx_by_header(headers, "기업명")
     store_idx = find_col_idx_by_header(headers, "매장명")
     recent_login_idx = find_col_idx_by_header(headers, "최근로그인시간")
-    
+
     # 그룹명 열 인덱스 (있는 경우)
     group_idx = None
     if vendor.group_col:
@@ -204,6 +277,12 @@ def extract_stores_from_list(
         if vendor.group_value and group_idx is not None:
             group = norm_text(row.iloc[group_idx])
             if group != vendor.group_value:
+                continue
+        
+        # 업체별: 그룹명 제외 (있는 경우)
+        if vendor.group_exclude and group_idx is not None:
+            group = norm_text(row.iloc[group_idx])
+            if group in vendor.group_exclude:
                 continue
 
         # 공통: 최근로그인시간 비어있으면 제외
@@ -547,7 +626,7 @@ def insert_stores_via_com_dynamic(
     """
     if not new_stores:
         return
-    
+
     col_num = col_letter_to_num(vendor.store_col_letter)
     start = data_start_row
     total = len(new_stores)
@@ -597,7 +676,7 @@ def insert_stores_via_com_dynamic(
     if progress_callback:
         progress_callback(50, total, f"매장명 입력 중... ({total}개)")
     
-    # 매장명만 교체
+        # 매장명만 교체
     for i, store in enumerate(new_stores):
         ws.Cells(insert_row + i, col_num).Value = store
         
@@ -661,10 +740,19 @@ def run_build(
         # 원본 파일을 Excel로 직접 열기 (복사하지 않음 - Excel이 SaveAs로 저장)
         wb = excel.Workbooks.Open(invoice_path)
         
+        # 날짜 셀에 오늘 날짜 입력 (첫번째 시트)
+        if vendor.date_cell:
+            from datetime import datetime
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            first_sheet = wb.Sheets(1)  # 첫번째 시트
+            first_sheet.Range(vendor.date_cell).Value = today_str
+            if progress_callback:
+                progress_callback(22, 100, f"날짜 입력: {today_str} → {vendor.date_cell}")
+        
         # 처리할 시트 목록 결정 (invoice_sheets가 있으면 여러 시트, 없으면 단일 시트)
         sheet_names_to_process = vendor.invoice_sheets if vendor.invoice_sheets else [vendor.invoice_sheet]
         total_sheets = len(sheet_names_to_process)
-        
+
         # 4) ID 시트 찾기 (숨겨져 있으면 임시로 보이게)
         id_ws, id_sheet_was_hidden = find_id_sheet(wb, vendor)
         
@@ -807,8 +895,8 @@ if __name__ == "__main__":
     class InvoiceBuilderApp:
         def __init__(self, root):
             self.root = root
-            self.root.title("거래명세서 매장 추가 프로그램")
-            self.root.geometry("600x350")
+            self.root.title("거래명세서 작성")
+            self.root.geometry("700x650")
             self.root.resizable(False, False)
 
             # 변수들
@@ -821,18 +909,33 @@ if __name__ == "__main__":
             self._create_widgets()
 
         def _create_widgets(self):
-            frame = ttk.Frame(self.root, padding=20)
-            frame.pack(fill="both", expand=True)
+            # 탭 컨트롤 생성
+            self.notebook = ttk.Notebook(self.root)
+            self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+            # 탭 1: 실행
+            self.run_tab = ttk.Frame(self.notebook, padding=20)
+            self.notebook.add(self.run_tab, text="실행")
+            self._create_run_tab()
+
+            # 탭 2: 업체 관리
+            self.vendor_tab = ttk.Frame(self.notebook, padding=20)
+            self.notebook.add(self.vendor_tab, text="업체 관리")
+            self._create_vendor_tab()
+
+        def _create_run_tab(self):
+            """실행 탭 생성"""
+            frame = self.run_tab
 
             # 1) 업체명 드롭다운 (가나다순 정렬)
             ttk.Label(frame, text="업체명:").grid(row=0, column=0, sticky="w", pady=10)
-            vendor_names = sorted(VENDOR_CONFIGS.keys())  # 가나다순 정렬
+            vendor_names = sorted(VENDOR_CONFIGS.keys())
             self.vendor_combo = ttk.Combobox(
                 frame, textvariable=self.vendor_var, values=vendor_names, state="readonly", width=40
             )
             self.vendor_combo.grid(row=0, column=1, sticky="w", pady=10)
             if vendor_names:
-                self.vendor_combo.current(0)  # 첫번째 항목 기본 선택
+                self.vendor_combo.current(0)
             
             # 방향키로 업체 선택 가능하도록 바인딩
             self.vendor_combo.bind("<Up>", self._combo_prev)
@@ -867,6 +970,192 @@ if __name__ == "__main__":
             # 6) 상태 라벨
             self.status_label = ttk.Label(frame, textvariable=self.status_var, wraplength=500)
             self.status_label.grid(row=5, column=0, columnspan=2, sticky="w", pady=10)
+
+        def _create_vendor_tab(self):
+            """업체 관리 탭 생성"""
+            frame = self.vendor_tab
+
+            # 상단: 업체 목록
+            list_frame = ttk.LabelFrame(frame, text="등록된 업체", padding=10)
+            list_frame.pack(fill="x", pady=(0, 10))
+
+            # 업체 리스트박스
+            self.vendor_listbox = tk.Listbox(list_frame, height=6, width=60)
+            self.vendor_listbox.pack(side="left", fill="x", expand=True)
+            self.vendor_listbox.bind("<<ListboxSelect>>", self._on_vendor_select)
+            
+            scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.vendor_listbox.yview)
+            scrollbar.pack(side="right", fill="y")
+            self.vendor_listbox.config(yscrollcommand=scrollbar.set)
+
+            # 버튼 프레임
+            btn_frame = ttk.Frame(frame)
+            btn_frame.pack(fill="x", pady=5)
+            ttk.Button(btn_frame, text="새 업체", command=self._new_vendor).pack(side="left", padx=5)
+            ttk.Button(btn_frame, text="삭제", command=self._delete_vendor).pack(side="left", padx=5)
+            ttk.Button(btn_frame, text="저장", command=self._save_vendor).pack(side="right", padx=5)
+
+            # 하단: 업체 설정 폼
+            form_frame = ttk.LabelFrame(frame, text="업체 설정", padding=10)
+            form_frame.pack(fill="both", expand=True)
+
+            # 입력 필드들
+            self.ve_name = tk.StringVar()
+            self.ve_company = tk.StringVar()
+            self.ve_group_col = tk.StringVar(value="B")
+            self.ve_group_value = tk.StringVar()
+            self.ve_group_exclude = tk.StringVar()
+            self.ve_invoice_sheet = tk.StringVar(value="상세내역")
+            self.ve_invoice_sheets = tk.StringVar()
+            self.ve_store_col = tk.StringVar(value="C")
+            self.ve_header_text = tk.StringVar(value="매장명")
+            self.ve_date_cell = tk.StringVar()
+
+            row = 0
+            ttk.Label(form_frame, text="업체명*:").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_name, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="기업명 (A열):").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_company, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="그룹명 열:").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_group_col, width=5).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="그룹명 포함:").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_group_value, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="그룹명 제외 (,구분):").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_group_exclude, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="시트명 (단일):").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_invoice_sheet, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="시트명 (복수, ,구분):").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_invoice_sheets, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="매장명 열:").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_store_col, width=5).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="헤더 텍스트:").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_header_text, width=30).grid(row=row, column=1, sticky="w", pady=3)
+            
+            row += 1
+            ttk.Label(form_frame, text="날짜 셀 (예: A1):").grid(row=row, column=0, sticky="w", pady=3)
+            ttk.Entry(form_frame, textvariable=self.ve_date_cell, width=10).grid(row=row, column=1, sticky="w", pady=3)
+
+            # 업체 목록 초기화
+            self._refresh_vendor_list()
+
+        def _refresh_vendor_list(self):
+            """업체 목록 새로고침"""
+            self.vendor_listbox.delete(0, tk.END)
+            for name in sorted(VENDOR_CONFIGS.keys()):
+                self.vendor_listbox.insert(tk.END, name)
+            
+            # 실행 탭의 콤보박스도 새로고침
+            vendor_names = sorted(VENDOR_CONFIGS.keys())
+            self.vendor_combo['values'] = vendor_names
+            if vendor_names and not self.vendor_var.get():
+                self.vendor_combo.current(0)
+
+        def _on_vendor_select(self, event):
+            """업체 선택 시 폼에 데이터 로드"""
+            selection = self.vendor_listbox.curselection()
+            if not selection:
+                return
+            
+            name = self.vendor_listbox.get(selection[0])
+            if name not in VENDOR_CONFIGS:
+                return
+            
+            config = VENDOR_CONFIGS[name]
+            self.ve_name.set(config.name)
+            self.ve_company.set(config.company_value or "")
+            self.ve_group_col.set(config.group_col or "B")
+            self.ve_group_value.set(config.group_value or "")
+            self.ve_group_exclude.set(",".join(config.group_exclude) if config.group_exclude else "")
+            self.ve_invoice_sheet.set(config.invoice_sheet or "상세내역")
+            self.ve_invoice_sheets.set(",".join(config.invoice_sheets) if config.invoice_sheets else "")
+            self.ve_store_col.set(config.store_col_letter or "C")
+            self.ve_header_text.set(config.table_header_text or "매장명")
+            self.ve_date_cell.set(config.date_cell or "")
+
+        def _new_vendor(self):
+            """새 업체 폼 초기화"""
+            self.vendor_listbox.selection_clear(0, tk.END)
+            self.ve_name.set("")
+            self.ve_company.set("")
+            self.ve_group_col.set("B")
+            self.ve_group_value.set("")
+            self.ve_group_exclude.set("")
+            self.ve_invoice_sheet.set("상세내역")
+            self.ve_invoice_sheets.set("")
+            self.ve_store_col.set("C")
+            self.ve_header_text.set("매장명")
+            self.ve_date_cell.set("")
+
+        def _save_vendor(self):
+            """업체 저장"""
+            name = self.ve_name.get().strip()
+            if not name:
+                messagebox.showerror("오류", "업체명을 입력하세요.")
+                return
+            
+            # 그룹 제외 목록 파싱
+            group_exclude = None
+            if self.ve_group_exclude.get().strip():
+                group_exclude = [x.strip() for x in self.ve_group_exclude.get().split(",") if x.strip()]
+            
+            # 복수 시트 파싱
+            invoice_sheets = None
+            if self.ve_invoice_sheets.get().strip():
+                invoice_sheets = [x.strip() for x in self.ve_invoice_sheets.get().split(",") if x.strip()]
+            
+            config = VendorConfig(
+                name=name,
+                list_sheet=None,
+                header_row=3,
+                list_id_col="D",
+                invoice_sheet=self.ve_invoice_sheet.get().strip() or "상세내역",
+                invoice_sheets=invoice_sheets,
+                store_col_letter=self.ve_store_col.get().strip() or "C",
+                table_header_text=self.ve_header_text.get().strip() or "매장명",
+                id_sheet="ID",
+                id_store_col="B",
+                id_login_col="C",
+                id_start_row=2,
+                protected_table_headers=["공급가액", "부가세"],
+                company_value=self.ve_company.get().strip() or None,
+                group_col=self.ve_group_col.get().strip() or None,
+                group_value=self.ve_group_value.get().strip() or None,
+                group_exclude=group_exclude,
+                date_cell=self.ve_date_cell.get().strip() or None,
+            )
+            
+            add_vendor_config(config)
+            self._refresh_vendor_list()
+            messagebox.showinfo("완료", f"'{name}' 업체가 저장되었습니다.")
+
+        def _delete_vendor(self):
+            """업체 삭제"""
+            selection = self.vendor_listbox.curselection()
+            if not selection:
+                messagebox.showwarning("경고", "삭제할 업체를 선택하세요.")
+                return
+            
+            name = self.vendor_listbox.get(selection[0])
+            if messagebox.askyesno("확인", f"'{name}' 업체를 삭제하시겠습니까?"):
+                delete_vendor_config(name)
+                self._refresh_vendor_list()
+                self._new_vendor()  # 폼 초기화
 
         def _select_list_file(self):
             path = filedialog.askopenfilename(
