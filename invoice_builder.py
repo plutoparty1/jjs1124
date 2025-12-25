@@ -377,10 +377,10 @@ def read_id_sheet_mapping(wb, vendor: VendorConfig) -> Tuple[Dict[str, str], Dic
 def get_existing_login_ids_dynamic(
     ws, vendor: VendorConfig, store_to_id: Dict[str, str], 
     data_start_row: int, protected_row: Optional[int]
-) -> Set[str]:
+) -> Tuple[Set[str], List[str]]:
     """
     상세내역 시트의 기존 매장명들을 ID 시트 매핑으로 로그인ID로 변환 (동적 레이아웃)
-    Returns: 기존 로그인ID set
+    Returns: (기존 로그인ID set, 매핑되지 않은 매장명 리스트)
     """
     col_num = col_letter_to_num(vendor.store_col_letter)
     start = data_start_row
@@ -391,6 +391,7 @@ def get_existing_login_ids_dynamic(
     values = ws.Range(range_str).Value
     
     existing_ids: Set[str] = set()
+    existing_store_names: List[str] = []  # 기존 매장명 목록
     
     if values:
         for row in values:
@@ -398,12 +399,13 @@ def get_existing_login_ids_dynamic(
             store_name = norm_text(val)
             if store_name == "":
                 break
+            existing_store_names.append(store_name)
             # 매장명으로 로그인ID 찾기
             login_id = store_to_id.get(store_name, "")
             if login_id:
                 existing_ids.add(login_id)
     
-    return existing_ids
+    return existing_ids, existing_store_names
 
 
 def add_to_id_sheet(wb, vendor: VendorConfig, new_stores: List[str], new_ids: List[str]):
@@ -448,6 +450,63 @@ def hide_id_sheet(wb, vendor: VendorConfig):
         if sheet.Name == vendor.id_sheet:
             sheet.Visible = False
             break
+
+
+def find_supply_amount_cell(ws, vendor: VendorConfig, start_row: int) -> Optional[Tuple[int, int]]:
+    """
+    공급가액 셀의 위치를 찾기
+    Returns: (행, 열) 또는 None
+    """
+    if not vendor.protected_table_headers:
+        return None
+    
+    # 첫 번째 헤더 텍스트 (보통 "공급가액")
+    search_text = vendor.protected_table_headers[0]
+    
+    # 검색 범위: start_row부터 충분히 큰 범위
+    max_search = start_row + 2000
+    
+    # 사용 범위 확인
+    used_range = ws.UsedRange
+    last_used_row = used_range.Row + used_range.Rows.Count - 1
+    max_search = min(max_search, last_used_row + 1)
+    
+    # 여러 열에서 헤더 검색
+    used_cols = used_range.Column + used_range.Columns.Count - 1
+    search_cols = list(range(1, min(used_cols + 1, 15)))  # 1~14열에서 검색
+    
+    for r in range(start_row, max_search):
+        for col in search_cols:
+            cell_value = ws.Cells(r, col).Value
+            text = norm_text(cell_value)
+            if search_text in text:
+                return (r, col)
+    
+    return None
+
+
+def write_excluded_stores_list(
+    ws, vendor: VendorConfig, excluded_stores: List[str], 
+    supply_cell_row: int, supply_cell_col: int
+):
+    """
+    제외된 매장 목록을 공급가액 셀 3칸 아래에 작성
+    """
+    if not excluded_stores:
+        return
+    
+    # 공급가액 셀의 3칸 아래부터 시작
+    start_row = supply_cell_row + 3
+    
+    # 헤더 작성
+    ws.Cells(start_row, supply_cell_col).Value = "※ 제외된 매장 (전체리스트에 없음)"
+    ws.Cells(start_row, supply_cell_col).Font.Bold = True
+    ws.Cells(start_row, supply_cell_col).Font.Color = 0x0000FF  # 빨간색 (BGR 형식)
+    
+    # 제외된 매장 목록 작성
+    for i, store_name in enumerate(sorted(excluded_stores)):
+        ws.Cells(start_row + 1 + i, supply_cell_col).Value = f"- {store_name}"
+        ws.Cells(start_row + 1 + i, supply_cell_col).Font.Color = 0x0000FF  # 빨간색
 
 
 def detect_table_layout(ws, vendor: VendorConfig) -> Tuple[int, int, int]:
@@ -700,9 +759,11 @@ def run_build(
     vendor_key: str,
     output_path: str,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
-) -> Tuple[List[str], str, int]:
+) -> Tuple[List[str], str, int, List[str]]:
     """
-    Returns: (missing_stores, actual_output_path, existing_count)
+    Returns: (missing_stores, actual_output_path, existing_count, excluded_stores)
+    - missing_stores: 새로 추가된 매장 목록
+    - excluded_stores: 명세서에 있지만 전체리스트에 없어서 제외된 매장 목록
     """
     import pythoncom
     import win32com.client as win32
@@ -760,10 +821,11 @@ def run_build(
         # store_to_id: {매장명: 로그인ID}, id_to_store_invoice: {로그인ID: 명세서 매장명}
         store_to_id, id_to_store_invoice = read_id_sheet_mapping(wb, vendor)
         
-        # 전체 기존 매장 수, 추가 매장 수 추적
+        # 전체 기존 매장 수, 추가 매장 수, 제외 매장 수 추적
         total_existing_count = 0
         all_missing_stores = []
         all_missing_ids = []
+        all_excluded_stores = []  # 제외된 매장 (전체리스트에 없음)
         
         # 각 시트 처리
         for sheet_idx, sheet_name in enumerate(sheet_names_to_process):
@@ -796,10 +858,22 @@ def run_build(
             )
 
             # 기존 매장의 로그인ID 확인
-            existing_ids = get_existing_login_ids_dynamic(
+            existing_ids, existing_store_names = get_existing_login_ids_dynamic(
                 ws, vendor, store_to_id, data_start_row, protected_row
             )
             total_existing_count += len(existing_ids)
+            
+            # 명세서에 있지만 전체리스트에 없는 매장 찾기
+            excluded_stores = []
+            for store_name in existing_store_names:
+                login_id = store_to_id.get(store_name, "")
+                if login_id:
+                    # 로그인ID가 전체리스트에 있는지 확인
+                    if login_id not in id_to_store:
+                        excluded_stores.append(store_name)
+                else:
+                    # ID 시트에도 없는 매장 = 전체리스트에도 없음
+                    excluded_stores.append(store_name)
 
             # 새로 추가할 매장 찾기 (로그인ID로 비교)
             missing_ids = []
@@ -839,6 +913,22 @@ def run_build(
                 if sheet_idx == 0:
                     all_missing_stores = missing_stores
                     all_missing_ids = missing_ids
+            
+            # 제외된 매장 목록을 공급가액 셀 아래에 기록
+            if excluded_stores:
+                # 첫 시트에서만 all_excluded 추적
+                if sheet_idx == 0:
+                    all_excluded_stores = excluded_stores
+                
+                supply_cell = find_supply_amount_cell(ws, vendor, data_start_row)
+                if supply_cell:
+                    supply_row, supply_col = supply_cell
+                    write_excluded_stores_list(ws, vendor, excluded_stores, supply_row, supply_col)
+                    if progress_callback:
+                        progress_callback(
+                            sheet_progress_base + 15, 100, 
+                            f"[{sheet_name}] 제외 매장 {len(excluded_stores)}개 기록"
+                        )
 
         # ID 시트에 새 매장명과 로그인ID 추가 (한번만)
         if all_missing_stores:
@@ -865,9 +955,10 @@ def run_build(
         wb = None  # finally에서 중복 Close 방지
 
         if progress_callback:
-            progress_callback(100, 100, f"완료! 시트 {total_sheets}개, 추가: {len(missing_stores)}개")
+            excluded_msg = f", 제외: {len(all_excluded_stores)}개" if all_excluded_stores else ""
+            progress_callback(100, 100, f"완료! 시트 {total_sheets}개, 추가: {len(missing_stores)}개{excluded_msg}")
 
-        return missing_stores, output_path, total_existing_count
+        return missing_stores, output_path, total_existing_count, all_excluded_stores
         
     finally:
         try:
@@ -1201,15 +1292,16 @@ if __name__ == "__main__":
                     # 람다에서 값을 캡처하기 위해 기본 인자 사용
                     self.root.after(0, lambda p=pct, t=total, m=msg: self._update_progress(p, t, m))
                 
-                missing, actual_output_path, existing_count = run_build(
+                missing, actual_output_path, existing_count, excluded = run_build(
                     list_path, invoice_path, vendor_key, output_path, progress_callback
                 )
                 
                 # 결과 표시
+                excluded_msg = f", 제외: {len(excluded)}개" if excluded else ""
                 if missing:
-                    result_msg = f"100% - 완료! 저장: {os.path.basename(actual_output_path)} | 기존: {existing_count}개, 추가: {len(missing)}개"
+                    result_msg = f"100% - 완료! 저장: {os.path.basename(actual_output_path)} | 기존: {existing_count}개, 추가: {len(missing)}개{excluded_msg}"
                 else:
-                    result_msg = f"100% - 완료! 저장: {os.path.basename(actual_output_path)} | 기존: {existing_count}개, 추가할 매장 없음"
+                    result_msg = f"100% - 완료! 저장: {os.path.basename(actual_output_path)} | 기존: {existing_count}개, 추가할 매장 없음{excluded_msg}"
                 
                 self.root.after(0, lambda r=result_msg: self._update_progress(100, 100, r))
                 
