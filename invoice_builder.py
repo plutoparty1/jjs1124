@@ -42,9 +42,9 @@ class VendorConfig:
     
     # ID 시트 설정 (매장명 ↔ 로그인ID 매핑 테이블)
     id_sheet: Optional[str] = None        # 거래명세서에서 ID 시트명 (예: "ID")
+    id_list_store_col: str = "A"          # ID 시트에서 전체리스트 매장명 열 (주스샵 매장명)
     id_store_col: str = "B"               # ID 시트에서 명세서 매장명 열
     id_login_col: str = "C"               # ID 시트에서 로그인ID 열
-    id_list_store_col: str = "D"          # ID 시트에서 전체리스트 매장명 열 (주스샵 매장명)
     id_start_row: int = 2                 # ID 시트에서 데이터 시작 행
     
     # 보호 테이블 헤더 (이 텍스트를 찾아서 그 행 위에 삽입)
@@ -440,12 +440,14 @@ def add_to_id_sheet(wb, vendor: VendorConfig, new_ids: List[str], list_store_nam
     
     # 새 매장 추가
     for i, (login_id, list_store) in enumerate(zip(new_ids, list_store_names)):
-        # 명세서 매장명은 비워둠 (id_store_col)
-        id_ws.Cells(r + i, store_col).Value = ""
-        # 로그인ID 입력
-        id_ws.Cells(r + i, login_col).Value = login_id
-        # 전체리스트 매장명 입력 (주스샵 매장명)
+        # 전체리스트 매장명 입력 (주스샵 매장명) - A열
         id_ws.Cells(r + i, list_store_col).Value = list_store
+        # 명세서 매장명은 비워둠 (id_store_col) - B열
+        id_ws.Cells(r + i, store_col).Value = ""
+        # 로그인ID 입력 (텍스트 형식) - C열
+        login_cell = id_ws.Cells(r + i, login_col)
+        login_cell.NumberFormat = "@"  # 텍스트 형식
+        login_cell.Value = str(login_id)
 
 
 def hide_id_sheet(wb, vendor: VendorConfig):
